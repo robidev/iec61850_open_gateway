@@ -1,7 +1,6 @@
 # iec61850_open_gateway
 
-This is an open implementation of an IEC 61850 web based gateway. It uses flask with websockets for the webserver.
-The backend is a python3 based iec61850 gateway implementation that uses ctypes for the wrapper.
+This is an open implementation of an IEC 61850 based gateway to IEC60870. It is a python3 based iec61850 to IEC60870 gateway implementation that uses ctypes for the wrappers.
 
 The gateway is configured by using an ini-file; config.ini
 This file describes the mapping. the [] defines the IEC60870 datatype
