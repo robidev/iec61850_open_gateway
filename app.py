@@ -36,12 +36,18 @@ def write_value(id, value):
 
 def operate(id, value):
   logger.debug("operate:" + str(id) + " v:" + str(value)  )
-  return client.operate(str(id),str(value))
+  if value == 1:
+    return client.operate(str(id),"true")
+  else:
+    return client.operate(str(id),"false")
 
 
 def select(id, value):
   logger.debug("select:" + str(id)  )
-  return client.select(str(id),str(value))
+  if value == 1:
+    return client.select(str(id),"true")
+  else:
+    return client.select(str(id),"false")
 
 
 def cancel(id):
