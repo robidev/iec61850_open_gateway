@@ -1,0 +1,18 @@
+version: "3.3"
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.libiec61850_gateway
+    hostname: gateway
+    networks:
+      subnetwork1:
+        ipv4_address: 10.0.0.250
+    privileged: true
+    ports:
+      - "2404:2404"
+    depends_on:
+      - "ied1_xcbr"
+      - "ied2_ptoc"
+      - "ied3_smv"
+      - "ied4_smv"

@@ -119,7 +119,7 @@ class IEC60870_5_104_client:
 
         #InformationObject_destroy(sc)
         #time.sleep( 5 )
-        dc = cast(DoubleCommand_create(None, 6000, 2, True, 0), InformationObject)
+        dc = cast(DoubleCommand_create(None, 6000, 1, True, 0), InformationObject)
 
         print("Send control command C_DC_NA_1")
         CS104_Connection_sendProcessCommandEx(self.con, CS101_COT_ACTIVATION, 1, dc)
@@ -127,7 +127,7 @@ class IEC60870_5_104_client:
         InformationObject_destroy(dc)
         time.sleep( 0.5 )
 
-        dc = cast(DoubleCommand_create(None, 6000, 2, False, 0), InformationObject)
+        dc = cast(DoubleCommand_create(None, 6000, 1, False, 0), InformationObject)
 
         print("Send control command C_DC_NA_1")
         CS104_Connection_sendProcessCommandEx(self.con, CS101_COT_ACTIVATION, 1, dc)
