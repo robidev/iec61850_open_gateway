@@ -143,7 +143,7 @@ if __name__ == '__main__':
   if 'measuredvaluescaled' in config:
     for item in config['measuredvaluescaled']:
       #create 104 data for GI
-      if iec104_server.add_ioa(int(item), lib60870.MeasuredValueScaled,0,read_60870_callback,False) == 0:
+      if iec104_server.add_ioa(int(item), lib60870.MeasuredValueScaled,0,read_60870_callback,True) == 0:
         register_datapoint(config['measuredvaluescaled'][item])
       else:
         logger.error("duplicate IOA:" + item + ", IOA not added to list")
@@ -152,7 +152,7 @@ if __name__ == '__main__':
   if 'singlepointinformation' in config:
     for item in config['singlepointinformation']:
       #create 104 data for GI
-      if iec104_server.add_ioa(int(item), lib60870.SinglePointInformation,0,read_60870_callback,False) == 0:
+      if iec104_server.add_ioa(int(item), lib60870.SinglePointInformation,0,read_60870_callback,True) == 0:
         register_datapoint(config['singlepointinformation'][item])
       else:
         logger.error("duplicate IOA:" + item + ", IOA not added to list")
