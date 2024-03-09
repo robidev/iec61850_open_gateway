@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
         && rm -rf /var/lib/apt/lists/*
 ENV DEBIAN_FRONTEND=
 
-RUN git clone -b v1.4 https://github.com/mz-automation/libiec61850.git /tmp/libiec61850
+RUN git clone -b v1.5 https://github.com/mz-automation/libiec61850.git /tmp/libiec61850
 
 RUN cd /tmp/libiec61850 && make dynlib \
 	&& cp build/libiec61850.so /usr/local/lib/
@@ -17,10 +17,7 @@ RUN cd /tmp/libiec61850 && make dynlib \
 RUN git clone -b master https://github.com/mz-automation/lib60870.git /tmp/lib60870
 
 RUN cd /tmp/lib60870/lib60870-C && make dynlib \
-	&& cp build/lib60870.so /usr/local/lib/
-
-
-#RUN git clone -b v1.4 https://github.com/robidev/iec61850_open_gateway.git /srv/iec61850_open_gateway
+	&& cp build/liblib60870.so /usr/local/lib/lib60870.so
 
 COPY . /srv/iec61850_open_gateway
 
