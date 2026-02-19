@@ -5,6 +5,7 @@ import ctypes
 import time
 import lib61850
 import logging
+from abstract_client import abstract_client
 
 from urllib.parse import urlparse
 from enum import Enum
@@ -102,7 +103,11 @@ class IedClientError(Enum):
 
 logger = logging.getLogger(__name__)
 
-class iec61850client():
+def scheme():
+	return "iec61850"
+
+
+class iec61850client(abstract_client):
 
 	def __init__(self, readvaluecallback = None, loggerRef = None, cmdTerm_cb = None, Rpt_cb = None):
 		global logger
@@ -118,7 +123,12 @@ class iec61850client():
 
 		self.cb_refs = [] # used to ensure the garbage collector does not clean up used callbacks
 		self.reporting = {} # used on reconnect to reenable the rcb's
+		logger.info("iec61850client initialised")
 
+	@staticmethod
+	def ErrorCodes(value):
+		return IedClientError(value).name
+	
 
 	@staticmethod
 	def printValue(value):
