@@ -4,6 +4,7 @@ import logging
 import pymodbus.client
 from abstract_client import abstract_client
 from urllib.parse import urlparse
+from pymodbus.exceptions import ConnectionException
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,8 @@ class libmodbusmaster(abstract_client):
         self.keys = []
         self.values = {}
         self.readvaluecallback = readvaluecallback
+        self.modbusconnection_failed_message = {}
+        logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
         logger.info("libmodbusmaster initialised")
 
     @staticmethod
@@ -83,7 +86,7 @@ class libmodbusmaster(abstract_client):
         con = self.getRegisteredConnections(id)
         if con is not None:
             device_id, address = parse_path(urlparse(id).path)
-            error = libmodbusmaster.writeholdingregister(con, address, int(value), device_id)
+            error = self.writeholdingregister(con, address, int(value), device_id)
             if error == 0:
                 logger.debug("Value '%s' written to %s" % (value, id))
                 return 0
@@ -121,13 +124,23 @@ class libmodbusmaster(abstract_client):
         else:
             con = pymodbus.client.ModbusTcpClient(uri_ref.hostname, port=port)
 
-        con.connect()
+        try:
+            con.connect()
+        except ConnectionException as e:
+            logger.error("Failed to connect to %s: %s" % (tupl, e))
+            con.close()
+            return None
 
         if con.connected:
+            if tupl in self.modbusconnection_failed_message and self.modbusconnection_failed_message[tupl] == True:
+                logger.info("Modbus reconnected to %s" % tupl)
+            self.modbusconnection_failed_message[tupl] = False
             self.connections[tupl] = {"con": con}
             return con
         else:
-            logger.error("no valid modbus connection with %s" % tupl)
+            if tupl in self.modbusconnection_failed_message and self.modbusconnection_failed_message[tupl] == False:
+                logger.error("no valid modbus connection with %s" % tupl)
+            self.modbusconnection_failed_message[tupl] = True
             con.close()
             return None
 
@@ -136,15 +149,15 @@ class libmodbusmaster(abstract_client):
         """Read a register value, routing to FC03 or FC04 based on address range."""
         con = self.getRegisteredConnections(id)
         if con is None:
-            logger.error("could not read from %s: no connection to modbus node" % id)
+            logger.debug("could not read from %s: no connection to modbus node" % id)
             return None
 
         device_id, address = parse_path(urlparse(id).path)
 
         if HOLDING_REGISTER_MIN <= address <= HOLDING_REGISTER_MAX:
-            value = libmodbusmaster.readholdingregister(con, address, device_id)
+            value = self.readholdingregister(con, address, device_id)
         elif INPUT_REGISTER_MIN <= address <= INPUT_REGISTER_MAX:
-            value = libmodbusmaster.readinputregister(con, address, device_id)
+            value = self.readinputregister(con, address, device_id)
         else:
             logger.error("address %i in %s is outside supported ranges (3xxxx / 4xxxx)" % (address, id))
             return None
@@ -160,36 +173,66 @@ class libmodbusmaster(abstract_client):
             self.ReadValue(key)
 
 
-    @staticmethod
-    def readholdingregister(con, address, device_id=1):
+    def readholdingregister(self, con, address, device_id=1):
         """Read a single holding register (FC03)."""
         proto_address = address_to_protocol(address)
-        result = con.read_holding_registers(proto_address, count=1, slave=device_id)
+        try:
+            result = con.read_holding_registers(proto_address, count=1, slave=device_id)
+        except ConnectionException as e:
+            logger.error("Connection lost during FC03 read: %s" % e)
+            con.close()
+            # Remove the connection from self.connections
+            for tupl, data in list(self.connections.items()):
+                if data["con"] is con:
+                    del self.connections[tupl]
+                    break
+            return None
         if result.isError():
             logger.error("FC03 read failed at address %i (protocol %i), device_id %i"
                          % (address, proto_address, device_id))
             return None
         return result.registers[0]
 
-    @staticmethod
-    def readinputregister(con, address, device_id=1):
+    def readinputregister(self, con, address, device_id=1):
         """Read a single input register (FC04)."""
         proto_address = address_to_protocol(address)
-        result = con.read_input_registers(proto_address, count=1, slave=device_id)
+        #logger.info("FC04 read at address %i (protocol %i), device_id %i"
+        #                 % (address, proto_address, device_id))
+        try:
+            result = con.read_input_registers(proto_address, count=1, slave=device_id)
+        except ConnectionException as e:
+            logger.error("Connection lost during FC04 read: %s" % e)
+            con.close()
+            # Remove the connection from self.connections
+            for tupl, data in list(self.connections.items()):
+                if data["con"] is con:
+                    del self.connections[tupl]
+                    break
+            return None
         if result.isError():
             logger.error("FC04 read failed at address %i (protocol %i), device_id %i"
                          % (address, proto_address, device_id))
             return None
+        #logger.info("value:" + str(result.registers[0]))
         return result.registers[0]
 
-    @staticmethod
-    def writeholdingregister(con, address, value, device_id=1):
+    def writeholdingregister(self, con, address, value, device_id=1):
         """Write a single holding register (FC06)."""
         if not (HOLDING_REGISTER_MIN <= address <= HOLDING_REGISTER_MAX):
             logger.error("FC06 write rejected: address %i is not in holding register range (4xxxx)" % address)
             return 1
         proto_address = address_to_protocol(address)
-        result = con.write_register(proto_address, value, slave=device_id)
+        try:
+            result = con.write_register(proto_address, value, slave=device_id)
+        except ConnectionException as e:
+            logger.error("Connection lost during FC06 write: %s" % e)
+            con.close()
+            # Remove the connection from self.connections
+            for tupl, data in list(self.connections.items()):
+                if data["con"] is con:
+                    del self.connections[tupl]
+                    break
+            return 1
         if result.isError():
             logger.error("FC06 write failed at address %i (protocol %i), device_id %i"
                          % (address, proto_address, device_id))
@@ -209,7 +252,12 @@ class libmodbusmaster(abstract_client):
         The corresponding 3xxxx status address (command_address - 10000) is
         available for independent polling via a separate config mapping.
         """
-        int_value = int(value)
+        int_value = 0
+        if value == 'true':
+            int_value = 2
+        if value == 'false':
+            int_value = 1
+
         if int_value == 0:
             logger.debug("operate called with value 0 (no action) for %s, ignoring" % id)
             return 0
@@ -233,7 +281,7 @@ class libmodbusmaster(abstract_client):
         logger.info("operate: %s — writing %i to address %i, device_id %i (%s)"
                     % (action, int_value, address, device_id, id))
 
-        error = libmodbusmaster.writeholdingregister(con, address, int_value, device_id)
+        error = self.writeholdingregister(con, address, int_value, device_id)
         if error != 0:
             logger.error("operate FC06 write failed for %s" % id)
             return error
@@ -243,7 +291,7 @@ class libmodbusmaster(abstract_client):
 
 
     def select(self, id, value):
-        raise NotImplementedError("select is not implemented for modbus")
+        logger.error("select is not implemented for modbus")
 
     def cancel(self, id, value):
-        raise NotImplementedError("cancel is not implemented for modbus")
+        logger.error("cancel is not implemented for modbus")

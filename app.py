@@ -45,7 +45,6 @@ def write_value(id, value):
 
 def operate(id, value):
   _client = get_client(str(id))
-  logger.debug("operate:" + str(id) + " v:" + str(value)  )
   if value == 1:
     return _client.operate(str(id),"true")
   else:

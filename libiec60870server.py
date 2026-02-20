@@ -22,7 +22,7 @@ class IEC60870_5_104_server:
         return True
 
     def GI_h(self, param, connection, asdu, qoi):
-        print(f"Received interrogation for group {qoi}")
+        #print(f"Received interrogation for group {qoi}")
 
         if (qoi == 20): #{ /* only handle station interrogation */
             alParams = IMasterConnection_getApplicationLayerParameters(connection)
@@ -85,7 +85,7 @@ class IEC60870_5_104_server:
 
 
     def ASDU_h(self, param, connection, asdu):
-        print("ASDU received")
+        #print("ASDU received")
         cot = CS101_ASDU_getCOT(asdu)
         if cot == CS101_COT_ACTIVATION:
             io = CS101_ASDU_getElement(asdu, 0)
@@ -126,7 +126,7 @@ class IEC60870_5_104_server:
 
             InformationObject_destroy(io)
         elif cot == CS101_COT_ACTIVATION_TERMINATION:
-            print("GI done")
+            pass #print("GI done")
         else:
             print("ASDU unknown: " + str(CS101_ASDU_getCOT(asdu)))
             CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_COT)
