@@ -26,8 +26,8 @@ def parse_path(path):
     device register map (e.g. 40001, 30005).  Protocol-level conversion
     to 0-based addressing is handled at read/write time.
 
-    Expected formats:
-      /1/40001  -> device_id=1, address=40001
+    Expected formats:                   human / wire
+      /1/40001  -> device_id=1, address=40001 / 00
       /40001    -> device_id=1, address=40001  (legacy, no device_id segment)
     """
     parts = path.lstrip("/").split("/")
@@ -178,7 +178,7 @@ class libmodbusmaster(abstract_client):
         proto_address = address_to_protocol(address)
         try:
             result = con.read_holding_registers(proto_address, count=1, slave=device_id)
-        except ConnectionException as e:
+        except (ConnectionException, ConnectionResetError, OSError) as e:
             logger.error("Connection lost during FC03 read: %s" % e)
             con.close()
             # Remove the connection from self.connections
@@ -200,7 +200,7 @@ class libmodbusmaster(abstract_client):
         #                 % (address, proto_address, device_id))
         try:
             result = con.read_input_registers(proto_address, count=1, slave=device_id)
-        except ConnectionException as e:
+        except (ConnectionException, ConnectionResetError, OSError) as e:
             logger.error("Connection lost during FC04 read: %s" % e)
             con.close()
             # Remove the connection from self.connections
@@ -224,7 +224,7 @@ class libmodbusmaster(abstract_client):
         proto_address = address_to_protocol(address)
         try:
             result = con.write_register(proto_address, value, slave=device_id)
-        except ConnectionException as e:
+        except (ConnectionException, ConnectionResetError, OSError) as e:
             logger.error("Connection lost during FC06 write: %s" % e)
             con.close()
             # Remove the connection from self.connections
