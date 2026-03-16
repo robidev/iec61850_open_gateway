@@ -178,8 +178,8 @@ class libmodbusmaster(abstract_client):
         proto_address = address_to_protocol(address)
         try:
             result = con.read_holding_registers(proto_address, count=1, slave=device_id)
-        except (ConnectionException, ConnectionResetError, OSError) as e:
-            logger.error("Connection lost during FC03 read: %s" % e)
+        except Exception as e:#(ConnectionException, ConnectionResetError, OSError, ModbusIOException) as e:
+            logger.error("Exception during FC03 read: %s. Closing connection.." % e)
             con.close()
             # Remove the connection from self.connections
             for tupl, data in list(self.connections.items()):
@@ -200,8 +200,8 @@ class libmodbusmaster(abstract_client):
         #                 % (address, proto_address, device_id))
         try:
             result = con.read_input_registers(proto_address, count=1, slave=device_id)
-        except (ConnectionException, ConnectionResetError, OSError) as e:
-            logger.error("Connection lost during FC04 read: %s" % e)
+        except Exception as e:#(ConnectionException, ConnectionResetError, OSError, ModbusIOException) as e:
+            logger.error("Exception during FC04 read: %s. Closing connection.." % e)
             con.close()
             # Remove the connection from self.connections
             for tupl, data in list(self.connections.items()):
@@ -224,8 +224,8 @@ class libmodbusmaster(abstract_client):
         proto_address = address_to_protocol(address)
         try:
             result = con.write_register(proto_address, value, slave=device_id)
-        except (ConnectionException, ConnectionResetError, OSError) as e:
-            logger.error("Connection lost during FC06 write: %s" % e)
+        except Exception as e:#(ConnectionException, ConnectionResetError, OSError, ModbusIOException) as e:
+            logger.error("Exception during FC06 write: %s. Closing connection.." % e)
             con.close()
             # Remove the connection from self.connections
             for tupl, data in list(self.connections.items()):
