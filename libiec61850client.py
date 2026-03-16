@@ -589,6 +589,8 @@ class iec61850client(abstract_client):
 			self.connections[tupl]["model"] = {}
 
 		con = lib61850.IedConnection_create()
+		lib61850.IedConnection_setRequestTimeout(con, 1000)
+		lib61850.IedConnection_setConnectTimeout(con, 1000)
 		error = lib61850.IedClientError()
 		lib61850.IedConnection_connect(con,ctypes.byref(error), host, port)
 		if error.value == lib61850.IED_ERROR_OK:

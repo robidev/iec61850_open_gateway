@@ -123,7 +123,7 @@ class libmodbusmaster(abstract_client):
             if con.connected:
                 return con
         else:
-            con = pymodbus.client.ModbusTcpClient(uri_ref.hostname, port=port)
+            con = pymodbus.client.ModbusTcpClient(uri_ref.hostname, port=port, timeout=1)
 
         try:
             con.connect()
