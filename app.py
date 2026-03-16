@@ -66,10 +66,42 @@ def cancel(id):
   return _client.cancel(str(id))
 
 
+# datapoints that could not be registered (usually because the downstream client
+# failed to connect during init). We'll retry registration periodically.
+PENDING_REGISTRATION_RETRY_SEC = 10.0
+pending_registrations = {}  # id -> last attempt timestamp (time.time())
+
+
 def register_datapoint(id):
+  global pending_registrations
+
   _client = get_client(str(id))
-  logger.debug("register datapoint:" + str(id) )
-  _client.registerReadValue(str(id))
+  logger.debug("register datapoint: %s" % str(id))
+
+  if _client is None:
+    logger.warning("could not register datapoint %s: client init failed, will retry" % id)
+    pending_registrations[id] = time.time()
+    return -1
+
+  ret = _client.registerReadValue(str(id))
+  if ret != 0:
+    logger.warning("could not register datapoint %s (ret=%s), will retry" % (id, ret))
+    pending_registrations[id] = time.time()
+    return ret
+
+  # success: no longer pending
+  pending_registrations.pop(id, None)
+  return 0
+
+
+def retry_pending_registrations():
+  now = time.time()
+  for id, last_attempt in list(pending_registrations.items()):
+    if now - last_attempt < PENDING_REGISTRATION_RETRY_SEC:
+      continue
+
+    logger.info("retrying datapoint registration for %s" % id)
+    register_datapoint(id)
 
 
 def register_datapoint_finished():
@@ -254,6 +286,9 @@ if __name__ == '__main__':
 
   while True:
     time.sleep(INTERVAL)
+
+    retry_pending_registrations()
+
     for _client in clients.values():
       _client.poll()
 
