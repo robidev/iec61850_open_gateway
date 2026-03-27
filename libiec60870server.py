@@ -225,6 +225,8 @@ class IEC60870_5_104_server:
 
     def update_ioa(self, ioa, data):
         value = int(float(data))
+        if ioa not in self.IOA_list:
+            return -1
         if value != self.IOA_list[ioa]['data']: #check if value is different, else ignore
             self.IOA_list[ioa]['data'] = value
             if self.IOA_list[ioa]['event'] == True:

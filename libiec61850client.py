@@ -759,7 +759,8 @@ class iec61850client(abstract_client):
 				submodel["value"] = val
 				
 				if self.Rpt_cb != None:
-					self.Rpt_cb(key, submodel)
+					DaRef_key = "iec61850://" + tupl + "/" + DaRef # generate a proper ref
+					self.Rpt_cb(DaRef_key, submodel)
 
 
 	def registerForReporting(self, key, tupl, ref):

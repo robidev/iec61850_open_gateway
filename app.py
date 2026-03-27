@@ -128,8 +128,18 @@ def readvaluecallback(key,data):
   for item_type in config:
     for ioa in config[item_type]:
       if config[item_type][ioa] == key:
-          iec104_server.update_ioa(int(ioa), data['value'])
-          return
+          
+        uri_ref = urlparse(key)
+        if uri_ref.scheme == libiec61850client.scheme(): # invert mapping of DbPos
+          if data['reftype'] == 'DA' and data['type'] == 'bit-string':
+            if data['value'] == '2':
+              data['value'] = '1'
+            elif data['value'] == '1':
+              data['value'] = '2'
+
+        if iec104_server.update_ioa(int(ioa), data['value']) != 0:
+          logger.debug("could not update IOA:" + str(ioa) + " with value:" + str(data['value']) + " for key:" + str(key)  )
+        return
   logger.debug("could not find IOA for key:" + str(key)  )
 
 
