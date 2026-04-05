@@ -3,6 +3,7 @@
 import os,sys
 import ctypes
 import time
+import threading
 import lib61850
 import logging
 from abstract_client import abstract_client
@@ -110,12 +111,13 @@ def scheme():
 class iec61850client(abstract_client):
 
 	def __init__(self, readvaluecallback = None, loggerRef = None, cmdTerm_cb = None, Rpt_cb = None):
-		global logger
+		global LOGGER
 		if loggerRef != None:
-			logger = loggerRef
+			LOGGER = loggerRef
 
 		self.polling = {}
 		self.connections = {}
+		self.connection_locks = {}
 		#callbacks, WARNING when a callback is called from a non-python created thread, socketio breaks..
 		self.readvaluecallback = readvaluecallback
 		self.cmdTerm_cb = cmdTerm_cb
@@ -123,12 +125,22 @@ class iec61850client(abstract_client):
 
 		self.cb_refs = [] # used to ensure the garbage collector does not clean up used callbacks
 		self.reporting = {} # used on reconnect to reenable the rcb's
+
+		self.stop_event = threading.Event()
+		self.connection_worker =  threading.Thread(target=self.connection_worker_thread)
+		self.connection_worker.start()
 		logger.info("iec61850client initialised")
 
 	@staticmethod
 	def ErrorCodes(value):
 		return IedClientError(value).name
 	
+
+	def stop_worker(self):
+		self.stop_event.set()
+		if self.connection_worker is not None:
+			self.connection_worker.join(timeout=3)
+
 
 	@staticmethod
 	def printValue(value):
@@ -159,16 +171,16 @@ class iec61850client(abstract_client):
 		if _type == "structure":
 			return ("STRUCTURE"), _type
 		if _type == "octet-string":
-			len = lib61850.MmsValue_getOctetStringSize(value)
+			length = lib61850.MmsValue_getOctetStringSize(value)
 			buf = lib61850.MmsValue_getOctetStringBuffer(value)
 			#magic cast to convert a swig pointer into a ctypes pointer, the int(buf) works, but why?
 			buff = ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))
 			#allocate a buffer for the result
-			res = bytearray(len)
+			res = bytearray(length)
 			#create a pointer to the result buffer
-			rptr = (ctypes.c_char * len).from_buffer(res)
+			rptr = (ctypes.c_char * length).from_buffer(res)
 			#copy the memory from the swig buffer to the result buffer
-			ctypes.memmove(rptr, buff, len)
+			ctypes.memmove(rptr, buff, length)
 			return ("%s" % ''.join(format(x, '02x') for x in res)), _type
 		if _type == "unsigned":
 			return ("%u" % lib61850.MmsValue_toUint32(value)), _type
@@ -183,16 +195,17 @@ class iec61850client(abstract_client):
 
 	@staticmethod
 	def printDataDirectory(con, doRef):
+		global LOGGER
 		tmodel = {}
 		if doRef.find("/") == -1:
-			logger.error("invalid datadirecory")
+			LOGGER.error("invalid data directory")
 			return {}
 
 		error = lib61850.IedClientError()
 		dataAttributes = lib61850.IedConnection_getDataDirectoryFC(con, ctypes.byref(error), doRef)
 
 		if error.value != 0:
-			logger.error("could not get logical device list, error:%i" % error.value)
+			LOGGER.error("could not get logical device list, error:%i" % error.value)
 
 		if dataAttributes:
 			dataAttribute = lib61850.LinkedList_getNext(dataAttributes)
@@ -227,13 +240,14 @@ class iec61850client(abstract_client):
 
 	@staticmethod
 	def discovery(con):
+		global LOGGER
 		tmodel = {}
 
 		error = lib61850.IedClientError()
 		deviceList = lib61850.IedConnection_getLogicalDeviceList(con, ctypes.byref(error))
 
 		if error.value != 0:
-			logger.error("could not get logical device list, error:%i" % error.value)
+			LOGGER.error("could not get logical device list, error:%i" % error.value)
 
 		if deviceList:
 			device = lib61850.LinkedList_getNext(deviceList)
@@ -244,7 +258,7 @@ class iec61850client(abstract_client):
 				logicalNodes = lib61850.IedConnection_getLogicalDeviceDirectory(con, ctypes.byref(error), LD_name)
 				if error.value != 0:#ret becomes int if connection is lost
 					lib61850.LinkedList_destroy(deviceList)
-					return model
+					return tmodel
 					
 				logicalNode = lib61850.LinkedList_getNext(logicalNodes)
 				while logicalNode:
@@ -293,9 +307,9 @@ class iec61850client(abstract_client):
 
 						#all DS are assumed not deletable 
 						if isDel == True:
-							logger.info("  DS: %s, is Deletable" % DSname)
+							LOGGER.info("  DS: %s, is Deletable" % DSname)
 						else:
-							logger.info("  DS: %s, not Deletable" % DSname)
+							LOGGER.info("  DS: %s, not Deletable" % DSname)
 						dataSetMemberRef = lib61850.LinkedList_getNext(dataSetMembers)
 
 						i = 0
@@ -364,6 +378,7 @@ class iec61850client(abstract_client):
 
 	@staticmethod
 	def getMMsValue(typeVal, value, size=8, typeval = -1):
+		global LOGGER
 		#allocate mmsvalue based on type
 		if typeVal == "visible-string" or typeval == lib61850.MMS_VISIBLE_STRING:
 			return lib61850.MmsValue_newVisibleString(str(value))
@@ -412,19 +427,20 @@ class iec61850client(abstract_client):
 			return  None
 		if typeVal == "unknown(error)":
 			return None
-		logger.error("Mms value type %s not supported" % typeVal)
+		LOGGER.error("Mms value type %s not supported" % typeVal)
 		return None
 
 
 	@staticmethod
 	def writeValue(con, model, ref, value):
+		global LOGGER
 		submodel, path = iec61850client.parseRef(model,ref)
 
 		if not submodel:
-			logger.error("cannot find ref: %s in model" % ref)
+			LOGGER.error("cannot find ref: %s in model" % ref)
 			return {},-1
 		if not 'FC' in submodel:
-			logger.error("ref is not DA")
+			LOGGER.error("ref is not DA")
 			return {},-1
 
 		fc = lib61850.FunctionalConstraint_fromString(submodel['FC']) 
@@ -443,15 +459,16 @@ class iec61850client(abstract_client):
 
 	@staticmethod
 	def updateValueInModel(con, model, ref):
+		global LOGGER
 		err = -1
 		val, path = iec61850client.parseRef(model,ref)
 
 		# recursive subfunction
 		def update_recurse(con, submodel, path):
-			err = -1
+			recurse_err = -1
 			if len(path) < 1:
-				logger.error("recusion into model went wrong")
-				err = -1
+				LOGGER.error("recusion into model went wrong")
+				recurse_err = -1
 			elif len(path) == 1:
 				if submodel[ path[0] ] and 'reftype' in submodel[ path[0] ] and submodel[ path[0] ]['reftype'] == 'DA':
 					fcName = submodel[ path[0] ]['FC']
@@ -462,20 +479,20 @@ class iec61850client(abstract_client):
 					if error.value == 0:
 						submodel[ path[0] ]['value'],  submodel[ path[0] ]['type'] = iec61850client.printValue(value)
 						lib61850.MmsValue_delete(value)
-						err = 0
+						recurse_err = 0
 					else:
-						logger.error("could not read DA: %s from device" % ref)
-						err = error.value
+						LOGGER.error("could not read DA: %s from device" % ref)
+						recurse_err = error.value
 
 				else:
 					submodel[ path[0] ] = iec61850client.printDataDirectory(con, ref)
 					if submodel[ path[0] ]:# check if value or empty returned
-						err = 0
+						recurse_err = 0
 					else:
-						err = -1
+						recurse_err = -1
 			else:
-				submodel[ path[0] ], err = update_recurse(con, submodel[ path[0] ], path[1:])
-			return submodel, err
+				submodel[ path[0] ], recurse_err = update_recurse(con, submodel[ path[0] ], path[1:])
+			return submodel, recurse_err
 
 		#recurse the model
 		model, err = update_recurse(con, model, path)
@@ -484,6 +501,7 @@ class iec61850client(abstract_client):
 
 	@staticmethod
 	def parseRef(model,ref):
+		global LOGGER
 		path = []
 		if ref == "" or ref == None:
 			return model, path
@@ -494,18 +512,18 @@ class iec61850client(abstract_client):
 			if ref in model:
 				return model[ref], path
 			else:
-				logger.error("cannot find LD in model")
+				LOGGER.error("cannot find LD in model")
 				return {}, []
 		
 		if len(_ref) > 2:
-			logger.error("cannot parse ref, more than 1 '/' encountered ")
+			LOGGER.error("cannot parse ref, more than 1 '/' encountered ")
 			return {}, []
 		#one / encountered
 		LD = _ref[0]
 		path.append(LD)
 		
 		if not LD in model:
-			logger.error("cannot find LD in model")
+			LOGGER.error("cannot find LD in model")
 			return {}, []
 		mm = model[LD]
 
@@ -514,7 +532,7 @@ class iec61850client(abstract_client):
 			path.append(_ref[i])
 
 			if not _ref[i] in mm:
-				logger.error("cannot find node in model: %s" % _ref[i])
+				LOGGER.error("cannot find node in model: %s" % _ref[i])
 				return {},[]
 
 			mm = mm[ _ref[i] ]
@@ -524,11 +542,12 @@ class iec61850client(abstract_client):
 
 	@staticmethod
 	def getRef(model,path):
+		global LOGGER
 		ref = ""
 		mm = model
 		for i in range( len(path) ):
 			if not path[i] in mm:
-				logger.error("cannot find node in model: %s in %s" % (path[i],ref))
+				LOGGER.error("cannot find node in model: %s in %s" % (path[i],ref))
 				return ref, mm
 
 			if i == 1:
@@ -542,6 +561,7 @@ class iec61850client(abstract_client):
 
 	@staticmethod
 	def printrefs(model, ref="", depth=0):
+		global LOGGER
 		_ref = ""
 		for element in model:
 			if depth == 0:
@@ -551,9 +571,151 @@ class iec61850client(abstract_client):
 			elif depth > 1:
 				_ref = ref + "." + element
 			if 'value' in model[element]:
-				print(_ref + ":\t" + str(model[element]['value']))
+				LOGGER.info(_ref + ":\t" + str(model[element]['value']))
 			else:
 				iec61850client.printrefs(model[element],_ref, depth + 1)
+
+
+	def getDataModel(self, tupl):
+		con = self.connections[tupl]["con"]
+		model = iec61850client.discovery(con)
+		if model: #if model is not empty
+			# store the model
+			self.connections[tupl]["model"] = model
+
+			#reenable the rcb's if applicable
+			if tupl in self.reporting and len(self.reporting[tupl]) > 0:
+				for refdata in self.reporting[tupl]:
+					rcb = refdata["rcb"]
+					error = lib61850.IedClientError()
+					rcb = lib61850.IedConnection_getRCBValues(con, ctypes.byref(error), refdata["RPT"], rcb)
+					RptId = lib61850.ClientReportControlBlock_getRptId(rcb)
+					lib61850.IedConnection_installReportHandler(con, refdata["RPT"], RptId, refdata["cbh"], id(refdata["refdata"]))
+
+					lib61850.ClientReportControlBlock_setRptEna(rcb, True)
+					lib61850.ClientReportControlBlock_setGI(rcb, True)
+					lib61850.IedConnection_setRCBValues(con, ctypes.byref(error), rcb, lib61850.RCB_ELEMENT_RPT_ENA | lib61850.RCB_ELEMENT_GI, False)
+					refdata["rcb"] = rcb
+			return 0
+		
+		self.connections[tupl]["con"] = None
+		lib61850.IedConnection_destroy(con)
+		return -1
+
+	def connection_worker_thread(self):
+		while not self.stop_event.is_set():
+			# iterate over self.connections
+			for tupl in self.connections.keys():
+				if tupl not in self.connection_locks:
+					continue
+
+				with self.connection_locks[tupl]:
+					if self.connections[tupl]["con"] != None:
+						if self.connections[tupl]["model"]:
+							#we have a connection and a model
+
+							if len(self.connections[tupl]['datapoints']) > self.connections[tupl]['datapoints_registered']:
+								con = self.connections[tupl]['con']
+								model = self.connections[tupl]['model']
+
+								start = self.connections[tupl]['datapoints_registered']  # number already done
+								for datapoint in self.connections[tupl]['datapoints'][start:]:
+									uri_ref = urlparse(datapoint)
+
+									#check if the ref exists in the model
+									submodel, path = iec61850client.parseRef(model, uri_ref.path[1:])
+									if submodel:
+										rpt = self.registerForReporting(datapoint, tupl, uri_ref.path[1:])
+										if rpt == False:
+											# fallback to periodic poll when no report+dataset configured
+											#if we allready have it in the list
+											self.polling[datapoint] = 1
+									else:
+										LOGGER.error("could not find %s in model" % uri_ref.path[1:])
+									self.connections[tupl]['datapoints_registered'] += 1
+							continue
+						else:
+							con = self.connections[tupl]["con"]
+							LOGGER.info("discovery: %s" % tupl)
+							self.getDataModel(tupl)
+							continue
+					# else, con == None
+					con = lib61850.IedConnection_create()
+					self.connections[tupl]['datapoints_registered'] = 0 # reset the registered datapoints
+					self.connections[tupl]["model"] = {}
+
+					#		/* To change MMS parameters you need to get access to the underlying MmsConnection */
+					#mmsConnection = lib61850.IedConnection_getMmsConnection(con)
+					#    /* Get the container for the parameters */
+					#parameters = lib61850.MmsConnection_getIsoConnectionParameters(mmsConnection)
+					#    /* set remote AP-Title according to SCL file example from IEC 61850-8-1 */
+					#lib61850.IsoConnectionParameters_setRemoteApTitle(parameters, "1.3.9999.13", 12)
+					#    /* just some arbitrary numbers */
+					#lib61850.IsoConnectionParameters_setLocalApTitle(parameters, "1.2.1200.15.3", 1);
+					#    /* use this to skip AP-Title completely - this may be required by some "obscure" servers */
+					#lib61850.IsoConnectionParameters_setRemoteApTitle(parameters, None, 0);
+					#lib61850.IsoConnectionParameters_setLocalApTitle(parameters, None, 0);
+
+					#    TSelector localTSelector = { 3, { 0x00, 0x01, 0x02 } };
+					localTSelector = lib61850.TSelector(
+							size=3,
+							value=(ctypes.c_uint8 * 4)(0x00, 0x01, 0x02, 0x00)  # last element padded
+						)
+					#    TSelector remoteTSelector = { 2, { 0x00, 0x01 } };
+					remoteTSelector = lib61850.TSelector(
+							size=2,
+							value=(ctypes.c_uint8 * 4)(0x00, 0x01, 0x00, 0x00)  # last 2 elements padded
+						)
+					#    SSelector remoteSSelector = { 2, { 0, 1 } };
+					remoteSSelector = lib61850.SSelector(
+							size=2,
+							value=(ctypes.c_uint8 * 16)(0x00, 0x01, *([0x00] * 14))  # last 14 elements padded
+						)
+					#    SSelector localSSelector = { 5, { 0, 1, 2, 3, 4 } };
+					localSSelector = lib61850.SSelector(
+							size=5,
+							value=(ctypes.c_uint8 * 16)(0x00, 0x01, 0x02, 0x03, 0x04, *([0x00] * 11))  # last 11 elements padded
+						)
+					#    PSelector localPSelector = {4, { 0x12, 0x34, 0x56, 0x78 } };
+					localPSelector = lib61850.PSelector(
+							size=4,
+							value=(ctypes.c_uint8 * 16)(0x12, 0x34, 0x56, 0x78, *([0x00] * 12))  # 
+						)
+					#    PSelector remotePSelector = {4, { 0x87, 0x65, 0x43, 0x21 } };
+					remotePSelector = lib61850.PSelector(
+							size=4,
+							value=(ctypes.c_uint8 * 16)(0x87, 0x65, 0x43, 0x21, *([0x00] * 12))  # 
+						)
+					#    /* change parameters for presentation, session and transport layers */
+					#lib61850.IsoConnectionParameters_setRemoteAddresses(parameters, remotePSelector, remoteSSelector, localTSelector)
+					#lib61850.IsoConnectionParameters_setLocalAddresses(parameters, localPSelector, localSSelector, remoteTSelector)
+				
+					#
+					#    /* use authentication */
+					#auth = lib61850.AcseAuthenticationParameter_create();
+					#lib61850.AcseAuthenticationParameter_setAuthMechanism(auth, lib61850.ACSE_AUTH_PASSWORD);
+					#password = "user1@testpw";
+					#lib61850.AcseAuthenticationParameter_setPassword(auth, password);
+					#lib61850.IsoConnectionParameters_setAcseAuthenticationParameter(parameters, auth);
+					#lib61850.IedConnection_setConnectTimeout(con, 10000);
+
+
+					error = lib61850.IedClientError()
+					host,port  = tupl.split(":")
+					#LOGGER.info("connecting: %s" % str(tupl))
+					lib61850.IedConnection_connect(con,ctypes.byref(error), host, int(port))
+					if error.value == lib61850.IED_ERROR_OK:
+						# store the active connection
+						self.connections[tupl]["con"] = con
+						# read the model on next iteration
+						LOGGER.info("connected: %s" % str(tupl))
+					else:
+						LOGGER.debug("error: could not connect to %s" % str(tupl))
+						self.connections[tupl]["con"] = None
+						lib61850.IedConnection_destroy(con)
+					# connection_lock
+				# for loop end
+			time.sleep(1.0)
 
 
 	# retrieve an active connection to IED, and up to date datamodel, stored in 'connections'
@@ -562,68 +724,29 @@ class iec61850client(abstract_client):
 			port = 102
 
 		if host == None:
-			logger.error("missing hostname")
+			LOGGER.error("missing hostname")
 			return -1
 
 		tupl = host + ":" + str(port)
-		if tupl in self.connections and self.connections[tupl]["con"] != None:
-			if not self.connections[tupl]["model"]:
-				con = self.connections[tupl]["con"]
-				model = iec61850client.discovery(con)
-				if model: #if model is not empty
-					# store the model
-					self.connections[tupl]["model"] = model
+		if tupl not in self.connection_locks:
+			self.connection_locks[tupl] = threading.Lock()
+
+		with self.connection_locks[tupl]:
+			if tupl in self.connections:
+				if self.connections[tupl]["con"] != None and self.connections[tupl]["model"]:
+					#we have a connection and a model
 					return 0
-				else:
-					#we could not perform a discovery, so remove connection
-					lib61850.IedConnection_destroy(con)
-					self.connections[tupl]["con"] = None
+				else: # connection is known, but no connection or model atm.
 					return -1
-			else:
-				#we have a connection and a model
-				return 0
-		
-		if not tupl in self.connections:
+			
 			self.connections[tupl] = {}
 			self.connections[tupl]["con"] = None
 			self.connections[tupl]["model"] = {}
-
-		con = lib61850.IedConnection_create()
-		lib61850.IedConnection_setRequestTimeout(con, 1000)
-		lib61850.IedConnection_setConnectTimeout(con, 1000)
-		error = lib61850.IedClientError()
-		lib61850.IedConnection_connect(con,ctypes.byref(error), host, port)
-		if error.value == lib61850.IED_ERROR_OK:
-			# store the active connection
-			self.connections[tupl]["con"] = con
-			# read the model
-			model = iec61850client.discovery(con)
-			if model: #if model is not empty
-				# store the model
-				self.connections[tupl]["model"] = model
-
-				#reenable the rcb's if applicable
-				if tupl in self.reporting and len(self.reporting[tupl]) > 0:
-					for refdata in self.reporting[tupl]:
-						rcb = refdata["rcb"]
-						error = lib61850.IedClientError()
-						rcb = lib61850.IedConnection_getRCBValues(con, ctypes.byref(error), refdata["RPT"], rcb)
-						RptId = lib61850.ClientReportControlBlock_getRptId(rcb)
-						lib61850.IedConnection_installReportHandler(con, refdata["RPT"], RptId, refdata["cbh"], id(refdata["refdata"]))
-
-						lib61850.ClientReportControlBlock_setRptEna(rcb, True)
-						lib61850.ClientReportControlBlock_setGI(rcb, True)
-						lib61850.IedConnection_setRCBValues(con, ctypes.byref(error), rcb, lib61850.RCB_ELEMENT_RPT_ENA | lib61850.RCB_ELEMENT_GI, False)
-						refdata["rcb"] = rcb
-
-				return 0
-			else:
-				return -1
-		else:
-			lib61850.IedConnection_destroy(con)
+			self.connections[tupl]['datapoints'] = []
+			self.connections[tupl]['datapoints_registered'] = 0
 			return -1
 
-
+			
 	# write a value to an active connection
 	def registerWriteValue(self, ref, value):
 		uri_ref = urlparse(ref)
@@ -632,11 +755,11 @@ class iec61850client(abstract_client):
 			port = 102
 
 		if uri_ref.scheme != "iec61850":
-			logger.error("incorrect scheme, only iec61860 is supported, not %s" % uri_ref.scheme)
+			LOGGER.error("incorrect scheme, only iec61860 is supported, not %s" % uri_ref.scheme)
 			return -1
 
 		if uri_ref.hostname == None:
-			logger.error("missing hostname: %s" % ref)
+			LOGGER.error("missing hostname: %s" % ref)
 			return -1
 
 		tupl = uri_ref.hostname + ":" + str(port)
@@ -646,12 +769,12 @@ class iec61850client(abstract_client):
 		if err == 0:
 			con = self.connections[tupl]['con']
 			if not con:
-				logger.error("no valid connection")
+				LOGGER.error("no valid connection")
 				return -1			
 
 			model = self.connections[tupl]['model']
 			if not model:
-				logger.error("no valid model")
+				LOGGER.error("no valid model")
 				return -1
 			
 			#todo:check if needed
@@ -659,20 +782,20 @@ class iec61850client(abstract_client):
 			if error == 0:
 				self.connections[tupl]['model'] = model
 				submodel, path = iec61850client.parseRef(model,uri_ref.path[1:]) #get value from model via ref
-				logger.debug("Value '%s' written to %s" % (str(submodel), ref) )
+				LOGGER.debug("Value '%s' written to %s" % (str(submodel), ref) )
 
 				if self.readvaluecallback != None:
 					self.readvaluecallback(ref, submodel)
 
 				return 0
 			else:
-				logger.error("could not write '%s' to %s with error: %i" % (str(value), ref, error))
+				LOGGER.error("could not write '%s' to %s with error: %i" % (str(value), ref, error))
 				if error == 3: #we lost the connection
 					lib61850.IedConnection_destroy(con)
 					self.connections[tupl]['con'] = None
 				return error
 		else:
-			logger.error("no connection to IED: %s:%s" % (uri_ref.hostname, port) )
+			LOGGER.error("no connection to IED: %s:%s" % (uri_ref.hostname, port) )
 		return -1
 
 
@@ -684,11 +807,11 @@ class iec61850client(abstract_client):
 			port = 102
 
 		if uri_ref.scheme != "iec61850":
-			logger.error("incorrect scheme, only iec61860 is supported, not %s" % uri_ref.scheme)
+			LOGGER.error("incorrect scheme, only iec61860 is supported, not %s" % uri_ref.scheme)
 			return {}, -1
 
 		if uri_ref.hostname == None:
-			logger.error("missing hostname: %s" % ref)
+			LOGGER.error("missing hostname: %s" % ref)
 			return {}, -1
 
 		tupl = uri_ref.hostname + ":" + str(port)
@@ -699,12 +822,12 @@ class iec61850client(abstract_client):
 		if err == 0:
 			con = self.connections[tupl]['con']
 			if not con:
-				logger.error("no valid connection")
+				LOGGER.error("no valid connection")
 				return {}, -1			
 
 			model = self.connections[tupl]['model']
 			if not model:
-				logger.error("no valid model")
+				LOGGER.error("no valid model")
 				return {}, -1
 
 			submodel, path = iec61850client.parseRef(model, uri_ref.path[1:])
@@ -713,26 +836,31 @@ class iec61850client(abstract_client):
 				if error == 0:
 					self.connections[tupl]['model'] = model
 					submodel, path = iec61850client.parseRef(model, uri_ref.path[1:])
-					logger.debug("Value '%s' read from %s" % (str(submodel), ref) )
+					LOGGER.debug("Value '%s' read from %s" % (str(submodel), ref) )
 
 					if self.readvaluecallback != None:
 						self.readvaluecallback(ref, submodel)
 
 					return submodel, 0 
 				else:
-					logger.error("could not read '%s' with error: %i" % (ref, error))
+					LOGGER.error("could not read '%s' with error: %i" % (ref, error))
 					if error == 3: #we lost the connection
 						lib61850.IedConnection_destroy(con)
 						self.connections[tupl]['con'] = None
 			else:
-				logger.error("could not find %s in model" % uri_ref.path[1:])
+				LOGGER.error("could not find %s in model" % uri_ref.path[1:])
 		else:
-			logger.error("no connection to IED: %s:%s" % (uri_ref.hostname, port) )
+			LOGGER.error("no connection to IED: %s:%s" % (uri_ref.hostname, port) )
 		return {}, -1
 
 	def ReportHandler_cb(self, param, report):
 		#parameter is dataset by ref.
 		refdata = ctypes.cast(param, ctypes.py_object).value
+		#print(refdata)
+		if not refdata or len(refdata) < 5:
+			LOGGER.error("refdata in RPT not valid!")
+			return
+		
 		key = refdata[0]
 		tupl = refdata[1]
 		LD = refdata[2]
@@ -752,15 +880,19 @@ class iec61850client(abstract_client):
 			if reason != lib61850.IEC61850_REASON_NOT_INCLUDED:
 				mmsval = lib61850.MmsValue_getElement(dataSetValues, int(index))
 				DaRef = dataset[index]['value']
+				if DaRef != "" and tupl != "":
+					key = "iec61850://" + tupl + "/" + DaRef
+				else:
+					LOGGER.error(f"could not generate from tupl and daref. will use: {key} (is only the first dset entry)")
+
 				val, _type = iec61850client.printValue(mmsval)
-				logger.debug(DaRef + ":" + val + "(" + _type + ")")
+				LOGGER.debug(DaRef + ":" + val + "(" + _type + ")")
 
 				submodel, _ = iec61850client.parseRef(self.connections[tupl]['model'],DaRef)
 				submodel["value"] = val
 				
 				if self.Rpt_cb != None:
-					DaRef_key = "iec61850://" + tupl + "/" + DaRef # generate a proper ref
-					self.Rpt_cb(DaRef_key, submodel)
+					self.Rpt_cb(key, submodel)
 
 
 	def registerForReporting(self, key, tupl, ref):
@@ -783,8 +915,8 @@ class iec61850client(abstract_client):
 								model[LD_name][LN_name][DSname]["0"]['reftype'] == "DX" ):
 							for index in model[LD_name][LN_name][DSname]:
 								if ref.startswith(model[LD_name][LN_name][DSname][index]['value']):
-									logger.info("DATASET found! Ref:%s in DSref: %s" % (ref, model[LD_name][LN_name][DSname][index]['value']))
-									logger.info("  DSRef:%s" % LD_name + "/" + LN_name + "." + DSname )
+									LOGGER.info("DATASET found! Ref:%s in DSref: %s" % (ref, model[LD_name][LN_name][DSname][index]['value']))
+									LOGGER.info("  DSRef:%s" % LD_name + "/" + LN_name + "." + DSname )
 									LD = LD_name
 									LN = LN_name
 									DS = DSname
@@ -794,22 +926,22 @@ class iec61850client(abstract_client):
 			pass
 
 		if Idx == "":
-			logger.error("RPT: could not find dataset for ref: %s" % ref)
+			LOGGER.error("RPT: could not find dataset for ref: %s" % ref)
 			return False
 
 		for RP in model[LD][LN]:
 			if "DatSet" in model[LD][LN][RP] and model[LD][LN][RP]["DatSet"]["value"] == LD + "/" + LN + "$" + DS:
-				logger.info("RPT found! Ref:%s" % LD + "/" + LN + "." + RP)
+				LOGGER.info("RPT found! Ref:%s" % LD + "/" + LN + "." + RP)
 				RPT = LD + "/" + LN + "." + model[LD][LN][RP]["DatSet"]["FC"] + "." + RP
 
 				error = lib61850.IedClientError()
 				if RPT in self.cb_refs:
-					logger.info("RPT allready registered")
+					LOGGER.info("RPT allready registered")
 					rcb = lib61850.IedConnection_getRCBValues(con, ctypes.byref(error), RPT, None)
 					if lib61850.ClientReportControlBlock_getRptEna(rcb):
-						logger.info("RPT allready enabled")
+						LOGGER.info("RPT allready enabled")
 					else:
-						logger.info("RPT disabled")
+						LOGGER.info("RPT disabled")
 					return True
 
 
@@ -819,20 +951,15 @@ class iec61850client(abstract_client):
 				cbh = lib61850.ReportCallbackFunction(self.ReportHandler_cb)
 
 				refdata = [key, tupl, LD, LN, DS]
-				ref = id(refdata) #model[LD][LN][DS])# bytes(str(LD + "/" + LN + "." + DS).encode('utf-8')) # ctypes.c_char_p( ref )
-				lib61850.IedConnection_installReportHandler(con, RPT, RptId, cbh, ref)
+				p_ref = id(refdata) #model[LD][LN][DS])# bytes(str(LD + "/" + LN + "." + DS).encode('utf-8')) # ctypes.c_char_p( ref )
+				lib61850.IedConnection_installReportHandler(con, RPT, RptId, cbh, p_ref)
 				
 				#lib61850.ClientReportControlBlock_setResv(rcb, True)
 				if lib61850.ClientReportControlBlock_getRptEna(rcb) == True:
-					logger.info("RPT allready enabled by another client")
+					LOGGER.info("RPT allready enabled by another client")
 					continue
 
-				lib61850.ClientReportControlBlock_setRptEna(rcb, True)
-				lib61850.ClientReportControlBlock_setGI(rcb, True)
-				lib61850.IedConnection_setRCBValues(con, ctypes.byref(error), rcb, lib61850.RCB_ELEMENT_RPT_ENA | lib61850.RCB_ELEMENT_GI, True)
-
 				self.cb_refs.append(RPT)
-
 
 				#register rcb on this connection, so it can be enabled on a reconnect
 				RcbData = {}
@@ -840,14 +967,20 @@ class iec61850client(abstract_client):
 				RcbData["cbh"] = cbh # hard reference to ensure this pointer is not cleaned by the garbage collector
 				RcbData["RPT"] = RPT # ref to report
 				RcbData["refdata"] = refdata # hard ref to dataset
+				RcbData["p_ref"] = p_ref
 
 				if not tupl in self.reporting:
 					self.reporting [tupl] = []
 				self.reporting[tupl].append(RcbData)
 
-				logger.info("RPT registered succesfull")
+				LOGGER.info("RPT registered succesfull")
+
+				lib61850.ClientReportControlBlock_setRptEna(rcb, True)
+				lib61850.ClientReportControlBlock_setGI(rcb, True)
+				lib61850.IedConnection_setRCBValues(con, ctypes.byref(error), rcb, lib61850.RCB_ELEMENT_RPT_ENA | lib61850.RCB_ELEMENT_GI, True)
+
 				return True
-		logger.error("could not find report for dataset")
+		LOGGER.error("could not find report for dataset")
 		return False
 
 		
@@ -856,7 +989,7 @@ class iec61850client(abstract_client):
 	# register value for reading
 	def registerReadValue(self,ref):
 		if ref in self.polling:
-			logger.debug("reference: %s allready registered" % ref)
+			LOGGER.debug("reference: %s allready registered" % ref)
 			return 0
 
 		uri_ref = urlparse(ref)
@@ -866,36 +999,20 @@ class iec61850client(abstract_client):
 
 
 		if uri_ref.scheme != "iec61850":
-			logger.error("incorrect scheme, only iec61860 is supported, not %s" % uri_ref.scheme)
+			LOGGER.error("incorrect scheme, only iec61860 is supported, not %s" % uri_ref.scheme)
 			return -1
 
 		if uri_ref.hostname == None:
-			logger.error("missing hostname: %s" % ref)
+			LOGGER.error("missing hostname: %s" % ref)
 			return -1
 
 		tupl = uri_ref.hostname + ":" + str(port)
 
-		#check if connection is active, or reconnect
+		#add ied if not known yet and ref
 		err = self.getIED(uri_ref.hostname, port)
-		if err == 0:
-			#only add an IED if it could be connected to
-			con = self.connections[tupl]['con']
-			model = self.connections[tupl]['model']
-			#check if the ref exists in the model
-			submodel, path = iec61850client.parseRef(model, uri_ref.path[1:])
-			if submodel:
-				rpt = self.registerForReporting(ref, tupl, uri_ref.path[1:])
-				if rpt == False:
-					# fallback to periodic poll when no report+dataset configured
-					#if we allready have it in the list
-					self.polling[ref] = 1
-				#self.polling[ref] = 1
-				return 0
-			else:
-				logger.error("could not find %s in model" % uri_ref.path[1:])
-		else:
-			logger.error("no connection to IED: %s:%s, ref:%s not registered" % (uri_ref.hostname, port, ref) )
-		return -1
+		with self.connection_locks[tupl]:
+			self.connections[tupl]['datapoints'].append(ref)
+		return 0
 
 
 	# retrieve all registered values by polling
@@ -909,11 +1026,11 @@ class iec61850client(abstract_client):
 
 
 			if uri_ref.scheme != "iec61850":
-				logger.error("incorrect scheme, only iec61860 is supported, not %s" % uri_ref.scheme)
+				LOGGER.error("incorrect scheme, only iec61860 is supported, not %s" % uri_ref.scheme)
 				continue
 
 			if uri_ref.hostname == None:
-				logger.error("missing hostname: %s" % key)
+				LOGGER.error("missing hostname: %s" % key)
 				continue
 
 			tupl = uri_ref.hostname + ":" + str(port)
@@ -928,21 +1045,21 @@ class iec61850client(abstract_client):
 					if err == 0:
 						self.connections[tupl]['model'] = model
 						submodel, path = iec61850client.parseRef(model, uri_ref.path[1:])
-						logger.debug("value:%s read from key: %s" % (str(submodel), key))
+						LOGGER.debug("value:%s read from key: %s" % (str(submodel), key))
 						#call function with ref+value
 						if self.readvaluecallback != None:
 							self.readvaluecallback(key, submodel)
 
 					else:
-						logger.error("model not updated for %s with error: %i" % (key, err))
+						LOGGER.error("model not updated for %s with error: %i" % (key, err))
 						if err == 3: #we lost the connection
 							lib61850.IedConnection_destroy(con)
 							self.connections[tupl]['con'] = None
 				else:
-					logger.debug("no connection or model")
+					LOGGER.debug("no connection or model")
 
 			else:
-				logger.debug("IED not available for %s with error: %i" % (key, err))
+				LOGGER.debug("IED not available for %s with error: %i" % (key, err))
 
 
 	# retrieve datamodel from server
@@ -962,7 +1079,7 @@ class iec61850client(abstract_client):
 			tupl =  hostname + ":" + str(port)
 			return self.connections[tupl]['model']
 		else:
-			logger.debug("no connection to IED: %s:%s" % (hostname, port) )
+			LOGGER.debug("no connection to IED: %s:%s" % (hostname, port) )
 			return {}
 	
 
@@ -973,7 +1090,7 @@ class iec61850client(abstract_client):
 	def commandTerminationHandler_cb(self, param, con):
 		#buff = ctypes.cast(param, ctypes.POINTER(ctypes.c_char))
 		buff = ctypes.cast(param,ctypes.c_char_p).value.decode("utf-8")
-		#logger.debug("commandTerminationHandler_cb called: %s", buff)
+		#LOGGER.debug("commandTerminationHandler_cb called: %s", buff)
 		lastApplError = lib61850.ControlObjectClient_getLastApplError(con)
 
 		#/* if lastApplError.error != 0 this indicates a CommandTermination- */
@@ -986,7 +1103,7 @@ class iec61850client(abstract_client):
 
 
 	def get_controlObject(self, tupl, uri_ref):
-		global logger
+		global LOGGER
 		control = None
 		con = self.connections[tupl]['con']
 
@@ -1001,7 +1118,7 @@ class iec61850client(abstract_client):
 
 			ctlModel = lib61850.ControlObjectClient_getControlModel(control)
 			if ctlModel == lib61850.CONTROL_MODEL_DIRECT_ENHANCED or ctlModel == lib61850.CONTROL_MODEL_SBO_ENHANCED:
-				logger.info("control object: enhanced security")
+				LOGGER.info("control object: enhanced security")
 				cbh = lib61850.CommandTerminationHandler(self.commandTerminationHandler_cb)
 
 				ref = bytes(uri_ref.path[1:].encode('utf-8'))
@@ -1010,14 +1127,14 @@ class iec61850client(abstract_client):
 				self.cb_refs.append(cbh) # hard reference to ensure this pointer is not cleaned by the garbage collector
 				self.cb_refs.append(ref)
 			else:
-				logger.info("control object: normal security")
+				LOGGER.info("control object: normal security")
 		else:
 			control = self.connections[tupl]['control'][ uri_ref.path[1:] ]
 		return control
 
 
 	def operate(self, ref, value):
-		global logger
+		global LOGGER
 		error = -1
 		addCause = ""
 
@@ -1042,19 +1159,19 @@ class iec61850client(abstract_client):
 
 			error = lib61850.ControlObjectClient_operate(control, ctlVal, 0)
 			if error == 1:
-				logger.info("operate: %s returned succesfull" % value)
+				LOGGER.info("operate: %s returned succesfull" % value)
 			else:
-				logger.error("operate: %s returned failed" % value)
+				LOGGER.error("operate: %s returned failed" % value)
 				lastApplError = lib61850.ControlObjectClient_getLastApplError(control)
 				addCause = AddCause(lastApplError.addCause).name
-				logger.info("LastApplError: %i, addCause: %s" % ( lastApplError.error, addCause))
+				LOGGER.info("LastApplError: %i, addCause: %s" % ( lastApplError.error, addCause))
 
 			#time.sleep(2)
 			lib61850.MmsValue_delete(ctlVal)		
 		return error, addCause
 
 	def select(self, ref, value):
-		global logger
+		global LOGGER
 		addCause = ""
 		error = -1
 
@@ -1075,36 +1192,36 @@ class iec61850client(abstract_client):
 
 			ctlModel = lib61850.ControlObjectClient_getControlModel(control)
 			if ctlModel == lib61850.CONTROL_MODEL_SBO_NORMAL:
-				logger.debug("SBO ctlmodel")
+				LOGGER.debug("SBO ctlmodel")
 				error = lib61850.ControlObjectClient_select(control)
 				if error == 1:
-					logger.info("select: %s returned succesfull" % value)
+					LOGGER.info("select: %s returned succesfull" % value)
 				else:
-					logger.error("select: %s returned failed" % value)
+					LOGGER.error("select: %s returned failed" % value)
 					lastApplError = lib61850.ControlObjectClient_getLastApplError(control)
 					addCause = AddCause(lastApplError.addCause).name
-					logger.error("LastApplError: %i, addCause: %s" % ( lastApplError.error, addCause))
+					LOGGER.error("LastApplError: %i, addCause: %s" % ( lastApplError.error, addCause))
 
 			elif ctlModel == lib61850.CONTROL_MODEL_SBO_ENHANCED:
-				logger.debug("SBOw ctlmodel")
+				LOGGER.debug("SBOw ctlmodel")
 
 				mmsType = lib61850.ControlObjectClient_getCtlValType(control)
 				ctlVal = iec61850client.getMMsValue("",value,0,mmsType)
 				lib61850.ControlObjectClient_setOrigin(control, "mmi", 3)
 				error = lib61850.ControlObjectClient_selectWithValue(control, ctlVal)
 				if error == 1:
-					logger.info("select: %s returned succesfull" % value)
+					LOGGER.info("select: %s returned succesfull" % value)
 				else:
-					logger.error("select: %s returned failed" % value)
+					LOGGER.error("select: %s returned failed" % value)
 					lastApplError = lib61850.ControlObjectClient_getLastApplError(control)
 					addCause = AddCause(lastApplError.addCause).name
-					logger.error("LastApplError: %i, addCause: %s" % ( lastApplError.error, addCause))
+					LOGGER.error("LastApplError: %i, addCause: %s" % ( lastApplError.error, addCause))
 
 				#time.sleep(2)
 				lib61850.MmsValue_delete(ctlVal)
 
 			else:
-				logger.error("cannot select object with ctlmodel: %i" % ctlModel)
+				LOGGER.error("cannot select object with ctlmodel: %i" % ctlModel)
 				addCause = ("cannot select object with ctlmodel: %i" % ctlModel)
 				error = -1
 
@@ -1134,16 +1251,17 @@ class iec61850client(abstract_client):
 
 if __name__=="__main__":
 	logging.basicConfig(format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
-		level=logging.DEBUG)
+		level=logging.INFO)
 	# note the `logger` from above is now properly configured
-	logger.debug("started")
+	LOGGER.debug("started")
 
 	hostname = "localhost"
 	tcpPort = 9102
+	port = 102
 	if len(sys.argv)>1:
 		hostname = sys.argv[1]
 	if len(sys.argv)>2:
-		port = sys.argv[2]
+		port = int(sys.argv[2])
 
 
 	#error = lib61850.IedClientError()
@@ -1159,10 +1277,10 @@ if __name__=="__main__":
 
 
 		#for key in model:
-		#	logger.info("[" + model[key]['FC'] + "] " + model[key]['type'] + "\t" + key + "\t" + model[key]['value'])
+		#	LOGGER.info("[" + model[key]['FC'] + "] " + model[key]['type'] + "\t" + key + "\t" + model[key]['value'])
 
 		#for key in model:
-		#	logger.error("[" + model[key]['FC'] + "] " + model[key]['type'] + "\t" + key + "\t" + model[key]['value'])
+		#	LOGGER.error("[" + model[key]['FC'] + "] " + model[key]['type'] + "\t" + key + "\t" + model[key]['value'])
 		#        /* Read RCB values */
 		
 		# rcb = lib61850.IedConnection_getRCBValues(con,ctypes.byref(error), "simpleIOGenericIO/LLN0.RP.EventsRCB01", None)
@@ -1200,12 +1318,12 @@ if __name__=="__main__":
 
 	#	lib61850.IedConnection_close(con)
 	#else:
-	#	logger.error("Failed to connect to %s:%i\n"%(hostname, tcpPort))
+	#	LOGGER.error("Failed to connect to %s:%i\n"%(hostname, tcpPort))
 	#lib61850.IedConnection_destroy(con)
 
 	cl = iec61850client()
-	model = cl.getDatamodel(None,'localhost',102)
-	cl.printrefs(model)
+	model = cl.getDatamodel(None,hostname,102)
+	iec61850client.printrefs(model)
 
 	#err = cl.registerReadValue("iec61850://127.0.0.1:9102/IED3_SMVMUnn/MMXU2.AvAPhs")
 	#err = cl.registerReadValue("iec61850://127.0.0.1:9102/IED3_SMVMUnn/MMXU2.AvPhVPhs.mag.f")
@@ -1219,25 +1337,25 @@ if __name__=="__main__":
 	#time.sleep(0.719)
 	#cl.poll()
 	#cl.registerWriteValue("iec61850://127.0.0.1:9102/IED3_SMVMUnn/LLN0.MSVCB01.SvEna",True)
-	error = cl.select("iec61850://127.0.0.1:102/IED1_XCBRGenericIO/CSWI2.Pos", "True")
-	if error == 1:
-		print("selected successfully")
-	else:
-		print("failed to select")	
+	#error = cl.select("iec61850://127.0.0.1:102/IED1_XCBRGenericIO/CSWI2.Pos", "True")
+	#if error == 1:
+	#	print("selected successfully")
+	#else:
+	#	print("failed to select")	
 	#control = None
-	if cl.operate("iec61850://127.0.0.1:102/IED1_XCBRGenericIO/CSWI2.Pos", "True") == 1:
-		print("operated successfully")
-	else:
-		print("failed to operate")
+	#if cl.operate("iec61850://127.0.0.1:102/IED1_XCBRGenericIO/CSWI2.Pos", "True") == 1:
+	#	print("operated successfully")
+	#else:
+	#	print("failed to operate")
 	
-	error = cl.select("iec61850://127.0.0.1:102/IED1_XCBRGenericIO/CSWI1.Pos", "True")
-	if error == 1:
-		print("selected successfully")
-	else:
-		print("failed to select")	
+	#error = cl.select("iec61850://127.0.0.1:102/IED1_XCBRGenericIO/CSWI1.Pos", "True")
+	#if error == 1:
+	#	print("selected successfully")
+	#else:
+	#	print("failed to select")	
 	#control = None
-	if cl.operate("iec61850://127.0.0.1:102/IED1_XCBRGenericIO/CSWI1.Pos", "True") == 1:
-		print("operated successfully")
-	else:
-		print("failed to operate")
+	#if cl.operate("iec61850://127.0.0.1:102/IED1_XCBRGenericIO/CSWI1.Pos", "True") == 1:
+	#	print("operated successfully")
+	#else:
+	#	print("failed to operate")
 
