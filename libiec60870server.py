@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 from lib60870 import *
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 class IEC60870_5_104_server:
 
     def printCP56Time2a(self, time):
-        print("%02i:%02i:%02i %02i/%02i/%04i" % ( CP56Time2a_getHour(time),
+        logger.info("%02i:%02i:%02i %02i/%02i/%04i" % ( CP56Time2a_getHour(time),
                         CP56Time2a_getMinute(time),
                         CP56Time2a_getSecond(time),
                         CP56Time2a_getDayOfMonth(time),
@@ -13,7 +16,7 @@ class IEC60870_5_104_server:
                         CP56Time2a_getYear(time) + 2000) )
 
     def clock(self, param, con, asdu, newTime):
-        print("Process time sync command with time ")
+        logger.info("Process time sync command with time ")
         self.printCP56Time2a(newTime)
         newSystemTimeInMs = CP56Time2a_toMsTimestamp(newTime)
         #/* Set time for ACT_CON message */
@@ -22,7 +25,7 @@ class IEC60870_5_104_server:
         return True
 
     def GI_h(self, param, connection, asdu, qoi):
-        #print(f"Received interrogation for group {qoi}")
+        #logger.info(f"Received interrogation for group {qoi}")
 
         if (qoi == 20): #{ /* only handle station interrogation */
             alParams = IMasterConnection_getApplicationLayerParameters(connection)
@@ -85,50 +88,50 @@ class IEC60870_5_104_server:
 
 
     def ASDU_h(self, param, connection, asdu):
-        #print("ASDU received")
+        #logger.info("ASDU received")
         cot = CS101_ASDU_getCOT(asdu)
         if cot == CS101_COT_ACTIVATION:
             io = CS101_ASDU_getElement(asdu, 0)
             ioa = InformationObject_getObjectAddress(io)
             if not ioa in self.IOA_list:
-                print("could not find IOA")
+                logger.error("could not find IOA")
                 CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_IOA)
             else:
                 ioa_object = self.IOA_list[ioa]
                 if (CS101_ASDU_getTypeID(asdu) == C_SC_NA_1):
-                    print("received single command")
+                    logger.info("received single command")
                     if ioa_object['type'] == SingleCommand:
                         sc = cast( io, SingleCommand)
                         
-                        print(f"IOA: {InformationObject_getObjectAddress(io)} switch to {SingleCommand_getState(sc)}, select:{SingleCommand_isSelect(sc)}")
+                        logger.info(f"IOA: {InformationObject_getObjectAddress(io)} switch to {SingleCommand_getState(sc)}, select:{SingleCommand_isSelect(sc)}")
                         ioa_object['data'] = SingleCommand_getState(sc)
                         if self.IOA_list[ioa]['callback'] != None:
                             self.IOA_list[ioa]['callback'](ioa,ioa_object, self, SingleCommand_isSelect(sc))
 
                         CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_CON)
                     else:
-                        print("mismatching asdu type:")
+                        logger.error("mismatching asdu type:")
                         CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_TYPE_ID)
 
                 if (CS101_ASDU_getTypeID(asdu) == C_DC_NA_1):
-                    print("received double command")
+                    logger.info("received double command")
                     if ioa_object['type'] == DoubleCommand:
                         sc = cast( io, DoubleCommand)
-                        print(f"IOA: {InformationObject_getObjectAddress(io)} switch to {DoubleCommand_getState(sc)}, select:{DoubleCommand_isSelect(sc)}")
+                        logger.info(f"IOA: {InformationObject_getObjectAddress(io)} switch to {DoubleCommand_getState(sc)}, select:{DoubleCommand_isSelect(sc)}")
                         ioa_object['data'] = DoubleCommand_getState(sc)
                         if self.IOA_list[ioa]['callback'] != None:
                             self.IOA_list[ioa]['callback'](ioa,ioa_object, self, DoubleCommand_isSelect(sc))
 
                         CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_CON)
                     else:
-                        print("mismatching asdu type:")
+                        logger.error("mismatching asdu type:")
                         CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_TYPE_ID)
 
             InformationObject_destroy(io)
         elif cot == CS101_COT_ACTIVATION_TERMINATION:
-            pass #print("GI done")
+            pass #logger.info("GI done")
         else:
-            print("ASDU unknown: " + str(CS101_ASDU_getCOT(asdu)))
+            logger.info("ASDU unknown: " + str(CS101_ASDU_getCOT(asdu)))
             CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_COT)
 
         IMasterConnection_sendASDU(connection, asdu)
@@ -137,18 +140,18 @@ class IEC60870_5_104_server:
 
 
     def Conn_req(self, param, address):
-        print("New connection request")
+        logger.info("New connection request")
         return True
 
     def Conn_event(self, param, con, event):
         if (event == CS104_CON_EVENT_CONNECTION_OPENED):
-            print(f"Connection opened {con}")
+            logger.info(f"Connection opened {con}")
         elif (event == CS104_CON_EVENT_CONNECTION_CLOSED):
-            print(f"Connection closed {con}")
+            logger.info(f"Connection closed {con}")
         elif (event == CS104_CON_EVENT_ACTIVATED):
-            print(f"Connection activated {con}")
+            logger.info(f"Connection activated {con}")
         elif (event == CS104_CON_EVENT_DEACTIVATED):
-            print(f"Connection deactivated {con}")
+            logger.info(f"Connection deactivated {con}")
 
     def read(self, param, connection, asdu, ioa):
         if ioa in self.IOA_list:
@@ -185,7 +188,8 @@ class IEC60870_5_104_server:
         self.slave = CS104_Slave_create(100, 100)
         CS104_Slave_setLocalAddress(self.slave, ip)
         #   /* Set mode to a single redundancy group
-        CS104_Slave_setServerMode(self.slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP)
+        #CS104_Slave_setServerMode(self.slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP)
+        CS104_Slave_setServerMode(self.slave,CS104_MODE_CONNECTION_IS_REDUNDANCY_GROUP)
 
         #/* get the connection parameters - we need them to create correct ASDUs */
         self.alParams = CS104_Slave_getAppLayerParameters(self.slave)
@@ -252,7 +256,7 @@ class IEC60870_5_104_server:
         CS104_Slave_start(self.slave)
 
         if CS104_Slave_isRunning(self.slave) == False:
-            print("Starting server failed!\n")
+            logger.error("Starting server failed!\n")
             return -1
         return 0
 
