@@ -102,7 +102,7 @@ class IedClientError(Enum):
     IED_ERROR_UNKNOWN = 99
 
 
-logger = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 def scheme():
 	return "iec61850"
@@ -129,7 +129,7 @@ class iec61850client(abstract_client):
 		self.stop_event = threading.Event()
 		self.connection_worker =  threading.Thread(target=self.connection_worker_thread)
 		self.connection_worker.start()
-		logger.info("iec61850client initialised")
+		LOGGER.info("iec61850client initialised")
 
 	@staticmethod
 	def ErrorCodes(value):
@@ -1017,7 +1017,7 @@ class iec61850client(abstract_client):
 
 	# retrieve all registered values by polling
 	def poll(self):
-		for key in self.polling:
+		for key in list(self.polling):
 			uri_ref = urlparse(key)
 
 			port = uri_ref.port
