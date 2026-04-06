@@ -2,6 +2,7 @@
 from lib60870 import *
 import time
 import logging
+from gpio_control import load_gpio_controller
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +147,16 @@ class IEC60870_5_104_server:
     def Conn_event(self, param, con, event):
         if (event == CS104_CON_EVENT_CONNECTION_OPENED):
             logger.info(f"Connection opened {con}")
+            self.connection_refcounter += 1
+            self.gpio.set_high(1)
         elif (event == CS104_CON_EVENT_CONNECTION_CLOSED):
             logger.info(f"Connection closed {con}")
+            if self.connection_refcounter > 0:
+                self.connection_refcounter -= 1
+            if self.connection_refcounter < 1:
+                self.connection_refcounter = 0
+                self.gpio.set_low(1)
+
         elif (event == CS104_CON_EVENT_ACTIVATED):
             logger.info(f"Connection activated {con}")
         elif (event == CS104_CON_EVENT_DEACTIVATED):
@@ -178,6 +187,10 @@ class IEC60870_5_104_server:
 
 
     def __init__(self, ip = "0.0.0.0"):
+        self.IOA_list = {}
+        self.connection_refcounter = 0
+        self.gpio = load_gpio_controller()
+
         self.clockSyncHandler = CS101_ClockSynchronizationHandler(self.clock)
         self.interrogationHandler = CS101_InterrogationHandler(self.GI_h)
         self.asduHandler = CS101_ASDUHandler(self.ASDU_h)
@@ -211,7 +224,7 @@ class IEC60870_5_104_server:
 
         CS104_Slave_setReadHandler(self.slave, self.readEventHandler, None)
 
-        self.IOA_list = {}
+
 
     def add_ioa(self, number, type = MeasuredValueScaled, data = 0, callback = None, event = False):
         if not number in self.IOA_list:

@@ -79,7 +79,7 @@ class libmodbusmaster(abstract_client):
             self.values[id] = None
             return 0
         else:
-            logger.error("could not register %s: no connection to modbus node" % id)
+            logger.debug("could not register %s: no connection to modbus node" % id)
         return -1
 
 

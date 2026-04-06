@@ -15,6 +15,8 @@ import lib60870
 import configparser
 from urllib.parse import urlparse
 
+from gpio_control import load_gpio_controller
+
 hosts_info = {}
 async_msg = []
 async_rpt = {}
@@ -79,13 +81,13 @@ def register_datapoint(id):
   logger.debug("register datapoint: %s" % str(id))
 
   if _client is None:
-    logger.warning("could not register datapoint %s: client init failed, will retry" % id)
+    logger.debug("could not register datapoint %s: client init failed, will retry" % id)
     pending_registrations[id] = time.time()
     return -1
 
   ret = _client.registerReadValue(str(id))
   if ret != 0:
-    logger.warning("could not register datapoint %s (ret=%s), will retry" % (id, ret))
+    logger.debug("could not register datapoint %s (ret=%s), will retry" % (id, ret))
     pending_registrations[id] = time.time()
     return ret
 
@@ -96,11 +98,13 @@ def register_datapoint(id):
 
 def retry_pending_registrations():
   now = time.time()
-  for id, last_attempt in list(pending_registrations.items()):
+  pending_items = list(pending_registrations.items())
+  logger.info("retrying pending datapoints. %i pending..." % len(pending_items))
+  for id, last_attempt in pending_items:
     if now - last_attempt < PENDING_REGISTRATION_RETRY_SEC:
       continue
 
-    logger.info("retrying datapoint registration for %s" % id)
+    logger.debug("retrying datapoint registration for %s" % id)
     register_datapoint(id)
 
 
@@ -155,7 +159,7 @@ def Rpt_cb(key, value):
 
 def read_60870_callback(ioa, ioa_data, iec104server):
   global config
-  print("read callback called from lib60870")
+  logger.debug("read callback called from lib60870")
   for item_type in config:
     if ioa in config[item_type]:
       return read_value(config[item_type][ioa])
@@ -164,7 +168,7 @@ def read_60870_callback(ioa, ioa_data, iec104server):
 
 
 def command_60870_callback(ioa, ioa_data, iec104server, select_value):
-  print("operate callback called from lib60870")
+  logger.debug("operate callback called from lib60870")
   for item_type in config:
     if ioa in config[item_type]:
       if select_value == True:
@@ -278,7 +282,7 @@ if __name__ == '__main__':
     for item in config['singlepointcommand']:
       #create 104 data for GI
       if iec104_server.add_ioa(int(item), lib60870.SingleCommand,0,command_60870_callback,False) == 0:
-        print("SingleCommand registered")
+        logger.info("SingleCommand registered")
       else:
         logger.error("duplicate IOA:" + item + ", IOA not added to list")
         continue
@@ -287,15 +291,17 @@ if __name__ == '__main__':
     for item in config['doublepointcommand']:
       #create 104 data for GI
       if iec104_server.add_ioa(int(item), lib60870.DoubleCommand,0,command_60870_callback,False) == 0:
-        print("DoubleCommand registered")
+        logger.info("DoubleCommand registered")
       else:
         logger.error("duplicate IOA:" + item + ", IOA not added to list")
         continue
 
 
-
+  gpio = load_gpio_controller()
   while True:
+    gpio.set_low(0)
     time.sleep(INTERVAL)
+    gpio.set_high(0)
 
     retry_pending_registrations()
 
@@ -308,4 +314,5 @@ if __name__ == '__main__':
       val = async_rpt.pop(key)
       logger.debug("%s updated via report" % key)
 
+  gpio.cleanup()
 
