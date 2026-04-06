@@ -99,6 +99,9 @@ def register_datapoint(id):
 def retry_pending_registrations():
   now = time.time()
   pending_items = list(pending_registrations.items())
+  if len(pending_items) == 0:
+    return
+  
   logger.info("retrying pending datapoints. %i pending..." % len(pending_items))
   for id, last_attempt in pending_items:
     if now - last_attempt < PENDING_REGISTRATION_RETRY_SEC:
